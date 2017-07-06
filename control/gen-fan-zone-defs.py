@@ -49,6 +49,7 @@ const std::vector<ZoneGroup> Manager::_zoneLayouts
             ZoneDefinition{
                 ${zone['num']},
                 ${zone['full_speed']},
+                ${zone['default_floor']},
                 std::vector<FanDefinition>{
                 %for fan in zone['fans']:
                     FanDefinition{
@@ -95,6 +96,7 @@ const std::vector<ZoneGroup> Manager::_zoneLayouts
                                     "${s['property']}",
                                     handler::setProperty<${s['type']}>(
                                         "${s['member']}",
+                                        "${s['interface']}",
                                         "${s['property']}"
                                     )
                                 ))
@@ -111,6 +113,16 @@ const std::vector<ZoneGroup> Manager::_zoneLayouts
 %endfor
 };
 '''
+
+
+def convertToMap(listOfDict):
+    """
+    Converts a list of dictionary entries to a std::map initialization list.
+    """
+    listOfDict = listOfDict.replace('[', '{')
+    listOfDict = listOfDict.replace(']', '}')
+    listOfDict = listOfDict.replace(':', ',')
+    return listOfDict
 
 
 def getEventsInZone(zone_num, zone_conditions, events_data):
@@ -170,8 +182,12 @@ def getEventsInZone(zone_num, zone_conditions, events_data):
                         param['type'] = 'size_t'
                     params.append(param)
                 else:
-                    param['value'] = str(e['action'][p]['value']).lower()
                     param['type'] = str(e['action'][p]['type']).lower()
+                    if p != 'map':
+                        param['value'] = str(e['action'][p]['value']).lower()
+                    else:
+                        emap = convertToMap(str(e['action'][p]['value']))
+                        param['value'] = param['type'] + emap
                     params.append(param)
             action['parameters'] = params
             event['action'] = action
@@ -292,6 +308,8 @@ def buildZoneData(zone_data, fan_data, events_data, zone_conditions_data):
             zone['num'] = z['zone']
 
             zone['full_speed'] = z['full_speed']
+
+            zone['default_floor'] = z['default_floor']
 
             # 'cooling_profiles' is optional (use 'all' instead)
             if ('cooling_profiles' not in z) or \

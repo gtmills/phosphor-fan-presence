@@ -28,6 +28,8 @@ constexpr auto conditionPropertyListPos = 1;
 using Condition = std::tuple<std::string,
                              std::vector<ConditionProperty>>;
 
+using PropertyVariantType = sdbusplus::message::variant<bool, int64_t>;
+
 constexpr auto fanNamePos = 0;
 constexpr auto sensorListPos = 1;
 using FanDefinition = std::tuple<std::string, std::vector<std::string>>;
@@ -56,10 +58,12 @@ using EventData = std::tuple<Group, Handler, Action>;
 
 constexpr auto zoneNumPos = 0;
 constexpr auto fullSpeedPos = 1;
-constexpr auto fanListPos = 2;
-constexpr auto setSpeedEventsPos = 3;
+constexpr auto floorSpeedPos = 2;
+constexpr auto fanListPos = 3;
+constexpr auto setSpeedEventsPos = 4;
 using ZoneDefinition = std::tuple<size_t,
-                                  unsigned int,
+                                  uint64_t,
+                                  uint64_t,
                                   std::vector<FanDefinition>,
                                   std::vector<SetSpeedEvent>>;
 

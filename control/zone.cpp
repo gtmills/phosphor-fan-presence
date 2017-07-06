@@ -13,7 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <phosphor-logging/log.hpp>
 #include <phosphor-logging/elog.hpp>
+#include <phosphor-logging/elog-errors.hpp>
+#include <xyz/openbmc_project/Common/error.hpp>
 #include "zone.hpp"
 #include "utility.hpp"
 
@@ -25,13 +28,17 @@ namespace control
 {
 
 using namespace phosphor::logging;
+using InternalFailure = sdbusplus::xyz::openbmc_project::Common::
+                             Error::InternalFailure;
 
 Zone::Zone(Mode mode,
            sdbusplus::bus::bus& bus,
            const ZoneDefinition& def) :
     _bus(bus),
     _fullSpeed(std::get<fullSpeedPos>(def)),
-    _zoneNum(std::get<zoneNumPos>(def))
+    _zoneNum(std::get<zoneNumPos>(def)),
+    _defFloorSpeed(std::get<floorSpeedPos>(def)),
+    _defCeilingSpeed(std::get<fullSpeedPos>(def))
 {
     auto& fanDefs = std::get<fanListPos>(def);
 
@@ -51,15 +58,16 @@ Zone::Zone(Mode mode,
             {
                 try
                 {
-                    bool value = false;
+                    PropertyVariantType property;
                     getProperty(_bus,
                                 entry.first,
                                 std::get<intfPos>(entry.second),
                                 std::get<propPos>(entry.second),
-                                value);
+                                property);
                     setPropertyValue(entry.first.c_str(),
+                                     std::get<intfPos>(entry.second).c_str(),
                                      std::get<propPos>(entry.second).c_str(),
-                                     value);
+                                     property);
                 }
                 catch (const std::exception& e)
                 {
@@ -97,6 +105,16 @@ void Zone::setSpeed(uint64_t speed)
 {
     for (auto& fan : _fans)
     {
+        //TODO openbmc/openbmc#1626 Move to control algorithm function
+        if (speed < _floorSpeed)
+        {
+            speed = _floorSpeed;
+        }
+        //TODO openbmc/openbmc#1626 Move to control algorithm function
+        if (speed > _ceilingSpeed)
+        {
+            speed = _ceilingSpeed;
+        }
         fan->setSpeed(speed);
     }
 }
@@ -118,14 +136,12 @@ void Zone::setActiveAllow(const Group* group, bool isActiveAllow)
     }
 }
 
-template <typename T>
 void Zone::getProperty(sdbusplus::bus::bus& bus,
                        const std::string& path,
                        const std::string& iface,
                        const std::string& prop,
-                       T& value)
+                       PropertyVariantType& value)
 {
-    sdbusplus::message::variant<T> property;
     auto serv = phosphor::fan::util::getService(path, iface, bus);
     auto hostCall = bus.new_method_call(serv.c_str(),
                                         path.c_str(),
@@ -136,11 +152,10 @@ void Zone::getProperty(sdbusplus::bus::bus& bus,
     auto hostResponseMsg = bus.call(hostCall);
     if (hostResponseMsg.is_method_error())
     {
-        throw std::runtime_error(
-            "Error in host call response for retrieving property");
+        log<level::ERR>("Error in host call response for retrieving property");
+        elog<InternalFailure>();
     }
-    hostResponseMsg.read(property);
-    value = sdbusplus::message::variant_ns::get<T>(property);
+    hostResponseMsg.read(value);
 }
 
 void Zone::handleEvent(sdbusplus::message::message& msg,
