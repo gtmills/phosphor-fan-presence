@@ -1,7 +1,7 @@
 #pragma once
 
-#include <sdbusplus/bus.hpp>
 #include "fan_properties.hpp"
+#include "sdbusplus.hpp"
 #include "sensor_base.hpp"
 
 
@@ -53,17 +53,15 @@ class FanEnclosure
         /**
          * @brief Constructs Fan Enclosure Object
          *
-         * @param[in] bus - Dbus bus object
          * @param[in] fanProp - Fan enclosure properties
+         * @param[in] initialState - The initial state of the enclosure.
          */
-        FanEnclosure(sdbusplus::bus::bus& bus,
-                     const phosphor::fan::Properties& fanProp) :
-                        bus(bus),
+        explicit FanEnclosure(const phosphor::fan::Properties& fanProp,
+                              presenceState initialState = UNKNOWN) :
                         invPath(std::get<0>(fanProp)),
-                        fanDesc(std::get<1>(fanProp))
+                        fanDesc(std::get<1>(fanProp)),
+                        presState(initialState)
         {
-            //Add this fan to inventory
-            updInventory();
         }
 
         /**
@@ -80,8 +78,6 @@ class FanEnclosure
             std::unique_ptr<Sensor>&& sensor);
 
     private:
-        /** @brief Connection for sdbusplus bus */
-        sdbusplus::bus::bus& bus;
         /** @brief Inventory path for this fan enclosure */
         const std::string invPath;
         /** @brief Description used as 'PrettyName' on inventory object */
@@ -89,7 +85,7 @@ class FanEnclosure
         /** @brief List of sensors associated with this fan enclosure */
         std::vector<std::unique_ptr<Sensor>> sensors;
         /** @brief Last known presence state of this fan enclosure */
-        presenceState presState = UNKNOWN;
+        presenceState presState;
 
         /**
          * @brief Get the current presence state based on all sensors

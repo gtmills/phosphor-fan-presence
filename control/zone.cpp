@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <chrono>
 #include <phosphor-logging/log.hpp>
 #include <phosphor-logging/elog.hpp>
 #include <phosphor-logging/elog-errors.hpp>
@@ -27,18 +28,24 @@ namespace fan
 namespace control
 {
 
+using namespace std::chrono;
 using namespace phosphor::logging;
 using InternalFailure = sdbusplus::xyz::openbmc_project::Common::
                              Error::InternalFailure;
 
 Zone::Zone(Mode mode,
            sdbusplus::bus::bus& bus,
+           phosphor::fan::event::EventPtr& events,
            const ZoneDefinition& def) :
     _bus(bus),
     _fullSpeed(std::get<fullSpeedPos>(def)),
     _zoneNum(std::get<zoneNumPos>(def)),
     _defFloorSpeed(std::get<floorSpeedPos>(def)),
-    _defCeilingSpeed(std::get<fullSpeedPos>(def))
+    _defCeilingSpeed(std::get<fullSpeedPos>(def)),
+    _incDelay(std::get<incDelayPos>(def)),
+    _decInterval(std::get<decIntervalPos>(def)),
+    _incTimer(events, [this](){ this->incTimerExpired(); }),
+    _decTimer(events, [this](){ this->decTimerExpired(); })
 {
     auto& fanDefs = std::get<fanListPos>(def);
 
@@ -50,52 +57,12 @@ Zone::Zone(Mode mode,
     // Do not enable set speed events when in init mode
     if (mode != Mode::init)
     {
-        // Setup signal trigger for set speed events
-        for (auto& event : std::get<setSpeedEventsPos>(def))
+        initEvents(def);
+        // Start timer for fan speed decreases
+        if (!_decTimer.running() && _decInterval != seconds::zero())
         {
-            // Get the current value for each property
-            for (auto& entry : std::get<groupPos>(event))
-            {
-                try
-                {
-                    PropertyVariantType property;
-                    getProperty(_bus,
-                                entry.first,
-                                std::get<intfPos>(entry.second),
-                                std::get<propPos>(entry.second),
-                                property);
-                    setPropertyValue(entry.first.c_str(),
-                                     std::get<intfPos>(entry.second).c_str(),
-                                     std::get<propPos>(entry.second).c_str(),
-                                     property);
-                }
-                catch (const std::exception& e)
-                {
-                    log<level::ERR>(e.what());
-                }
-            }
-            // Setup signal matches for property change events
-            for (auto& prop : std::get<propChangeListPos>(event))
-            {
-                _signalEvents.emplace_back(
-                        std::make_unique<EventData>(
-                                EventData
-                                {
-                                    std::get<groupPos>(event),
-                                    std::get<handlerObjPos>(prop),
-                                    std::get<actionPos>(event)
-                                }));
-                _matches.emplace_back(
-                        bus,
-                        std::get<signaturePos>(prop).c_str(),
-                        std::bind(std::mem_fn(&Zone::handleEvent),
-                                  this,
-                                  std::placeholders::_1,
-                                  _signalEvents.back().get()));
-            }
-            // Run action function for initial event state
-            std::get<actionPos>(event)(*this,
-                                       std::get<groupPos>(event));
+            _decTimer.start(_decInterval,
+                            phosphor::fan::util::Timer::TimerType::repeating);
         }
     }
 }
@@ -105,16 +72,6 @@ void Zone::setSpeed(uint64_t speed)
 {
     for (auto& fan : _fans)
     {
-        //TODO openbmc/openbmc#1626 Move to control algorithm function
-        if (speed < _floorSpeed)
-        {
-            speed = _floorSpeed;
-        }
-        //TODO openbmc/openbmc#1626 Move to control algorithm function
-        if (speed > _ceilingSpeed)
-        {
-            speed = _ceilingSpeed;
-        }
         fan->setSpeed(speed);
     }
 }
@@ -134,6 +91,129 @@ void Zone::setActiveAllow(const Group* group, bool isActiveAllow)
                                 _active.end(),
                                 actPred);
     }
+}
+
+void Zone::setFloor(uint64_t speed)
+{
+    _floorSpeed = speed;
+    // Floor speed above target, update target to floor speed
+    if (_targetSpeed < _floorSpeed)
+    {
+        requestSpeedIncrease(_floorSpeed - _targetSpeed);
+    }
+}
+
+void Zone::requestSpeedIncrease(uint64_t targetDelta)
+{
+    // Only increase speed when delta is higher than
+    // the current increase delta for the zone and currently under ceiling
+    if (targetDelta > _incSpeedDelta &&
+        _targetSpeed < _ceilingSpeed)
+    {
+        _targetSpeed = (targetDelta - _incSpeedDelta) + _targetSpeed;
+        _incSpeedDelta = targetDelta;
+        // Target speed can not go above a defined ceiling speed
+        if (_targetSpeed > _ceilingSpeed)
+        {
+            _targetSpeed = _ceilingSpeed;
+        }
+        // Cancel current timer countdown
+        if (_incTimer.running())
+        {
+            _incTimer.stop();
+        }
+        setSpeed(_targetSpeed);
+        // Start timer countdown for fan speed increase
+        _incTimer.start(_incDelay,
+                        phosphor::fan::util::Timer::TimerType::oneshot);
+    }
+}
+
+void Zone::incTimerExpired()
+{
+    // Clear increase delta when timer expires allowing additional speed
+    // increase requests or speed decreases to occur
+    _incSpeedDelta = 0;
+}
+
+void Zone::requestSpeedDecrease(uint64_t targetDelta)
+{
+    // Only decrease the lowest target delta requested
+    if (_decSpeedDelta == 0 || targetDelta < _decSpeedDelta)
+    {
+        _decSpeedDelta = targetDelta;
+    }
+}
+
+void Zone::decTimerExpired()
+{
+    // Only decrease speeds when no requested increases exist and
+    // the increase timer is not running (i.e. not in the middle of increasing)
+    if (_incSpeedDelta == 0 && !_incTimer.running())
+    {
+        // Target speed can not go below the defined floor speed
+        if ((_targetSpeed < _decSpeedDelta) ||
+            (_targetSpeed - _decSpeedDelta < _floorSpeed))
+        {
+            _targetSpeed = _floorSpeed;
+        }
+        else
+        {
+            _targetSpeed = _targetSpeed - _decSpeedDelta;
+        }
+        setSpeed(_targetSpeed);
+    }
+    // Clear decrease delta when timer expires
+    _decSpeedDelta = 0;
+    // Decrease timer is restarted since its repeating
+}
+
+void Zone::initEvents(const ZoneDefinition& def)
+{
+    // Setup signal trigger for set speed events
+    for (auto& event : std::get<setSpeedEventsPos>(def))
+    {
+        // Get the current value for each property
+        for (auto& entry : std::get<groupPos>(event))
+        {
+            refreshProperty(_bus,
+                            entry.first,
+                            std::get<intfPos>(entry.second),
+                            std::get<propPos>(entry.second));
+        }
+        // Setup signal matches for property change events
+        for (auto& prop : std::get<propChangeListPos>(event))
+        {
+            _signalEvents.emplace_back(
+                    std::make_unique<EventData>(
+                            EventData
+                            {
+                                std::get<groupPos>(event),
+                                std::get<handlerObjPos>(prop),
+                                std::get<actionPos>(event)
+                            }));
+            _matches.emplace_back(
+                    _bus,
+                    std::get<signaturePos>(prop).c_str(),
+                    std::bind(std::mem_fn(&Zone::handleEvent),
+                              this,
+                              std::placeholders::_1,
+                              _signalEvents.back().get()));
+        }
+        // Run action function for initial event state
+        std::get<actionPos>(event)(*this,
+                                   std::get<groupPos>(event));
+    }
+}
+
+void Zone::refreshProperty(sdbusplus::bus::bus& bus,
+                           const std::string& path,
+                           const std::string& iface,
+                           const std::string& prop)
+{
+    PropertyVariantType property;
+    getProperty(_bus, path, iface, prop, property);
+    setPropertyValue(path.c_str(), iface.c_str(), prop.c_str(), property);
 }
 
 void Zone::getProperty(sdbusplus::bus::bus& bus,

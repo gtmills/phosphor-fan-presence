@@ -1,7 +1,7 @@
 #pragma once
 
-#include <sdbusplus/bus.hpp>
 #include <sdbusplus/server.hpp>
+#include "sdbusplus.hpp"
 #include "sensor_base.hpp"
 
 
@@ -33,22 +33,21 @@ class TachSensor : public Sensor
         /**
          * @brief Constructs Tach Sensor Object
          *
-         * @param[in] bus - Dbus bus object
          * @param[in] id - ID name of this sensor
          * @param[in] fanEnc - Reference to the fan enclosure with this sensor
          */
         TachSensor(
-            sdbusplus::bus::bus& bus,
             const std::string& id,
-            FanEnclosure& fanEnc) :
+            FanEnclosure& fanEnc,
+            bool initialState = false) :
                 Sensor(id, fanEnc),
-                bus(bus),
-                tachSignal(bus,
+                tachSignal(util::SDBusPlus::getBus(),
                            match(id).c_str(),
                            std::bind(
                                std::mem_fn(&TachSensor::handleTachChange),
                                this,
-                               std::placeholders::_1))
+                               std::placeholders::_1)),
+                state(initialState)
         {
             // Nothing to do here
         }
@@ -61,12 +60,10 @@ class TachSensor : public Sensor
         bool isPresent();
 
     private:
-        /** @brief Connection for sdbusplus bus */
-        sdbusplus::bus::bus& bus;
         /** @brief Used to subscribe to dbus signals */
         sdbusplus::server::match::match tachSignal;
         /** @brief Tach speed value given from the signal */
-        int64_t tach = 0;
+        bool state;
 
         /**
          * @brief Appends the fan sensor id to construct a match string

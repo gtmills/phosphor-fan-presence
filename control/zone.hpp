@@ -1,10 +1,12 @@
 #pragma once
+#include <chrono>
 #include <vector>
 #include <algorithm>
 #include <sdbusplus/bus.hpp>
 #include <sdbusplus/server.hpp>
 #include "fan.hpp"
 #include "types.hpp"
+#include "timer.hpp"
 
 namespace phosphor
 {
@@ -46,10 +48,12 @@ class Zone
          *
          * @param[in] mode - mode of fan control
          * @param[in] bus - the dbus object
+         * @param[in] events - sd_event pointer
          * @param[in] def - the fan zone definition data
          */
         Zone(Mode mode,
              sdbusplus::bus::bus& bus,
+             phosphor::fan::event::EventPtr& events,
              const ZoneDefinition& def);
 
         /**
@@ -125,16 +129,6 @@ class Zone
         };
 
         /**
-         * @brief Set the floor speed to the given speed
-         *
-         * @param[in] speed - Speed to set the floor to
-         */
-        inline void setFloor(uint64_t speed)
-        {
-            _floorSpeed = speed;
-        };
-
-        /**
          * @brief Get the ceiling speed
          *
          * @return - The current ceiling speed
@@ -167,6 +161,62 @@ class Zone
             std::swap(_ceilingKeyValue, keyValue);
             return keyValue;
         };
+
+        /**
+         * @brief Get the increase speed delta
+         *
+         * @return - The current increase speed delta
+         */
+        inline auto& getIncSpeedDelta() const
+        {
+            return _incSpeedDelta;
+        };
+
+        /**
+         * @brief Get the decrease speed delta
+         *
+         * @return - The current decrease speed delta
+         */
+        inline auto& getDecSpeedDelta() const
+        {
+            return _decSpeedDelta;
+        };
+
+        /**
+         * @brief Set the floor speed to the given speed and increase target
+         * speed to the floor when target is below floor.
+         *
+         * @param[in] speed - Speed to set the floor to
+         */
+        void setFloor(uint64_t speed);
+
+        /**
+         * @brief Calculate the requested target speed from the given delta
+         * and increase the fan speeds, not going above the ceiling.
+         *
+         * @param[in] targetDelta - The delta to increase the target speed by
+         */
+        void requestSpeedIncrease(uint64_t targetDelta);
+
+        /**
+         * @brief Calculate the requested target speed from the given delta
+         * and increase the fan speeds, not going above the ceiling.
+         *
+         * @param[in] targetDelta - The delta to increase the target speed by
+         */
+        void requestSpeedDecrease(uint64_t targetDelta);
+
+        /**
+         * @brief Callback function for the increase timer that delays
+         * processing of requested speed increases while fans are increasing
+         */
+        void incTimerExpired();
+
+        /**
+         * @brief Callback function for the decrease timer that processes any
+         * requested speed decreases if allowed
+         */
+        void decTimerExpired();
 
     private:
 
@@ -216,6 +266,41 @@ class Zone
         bool _isActive = true;
 
         /**
+         * Target speed for this zone
+         */
+        uint64_t _targetSpeed = _fullSpeed;
+
+        /**
+         * Speed increase delta
+         */
+        uint64_t _incSpeedDelta = 0;
+
+        /**
+         * Speed decrease delta
+         */
+        uint64_t _decSpeedDelta = 0;
+
+        /**
+         * Speed increase delay in seconds
+         */
+        std::chrono::seconds _incDelay;
+
+        /**
+         * Speed decrease interval in seconds
+         */
+        std::chrono::seconds _decInterval;
+
+        /**
+         * The increase timer object
+         */
+        phosphor::fan::util::Timer _incTimer;
+
+        /**
+         * The decrease timer object
+         */
+        phosphor::fan::util::Timer _decTimer;
+
+        /**
          * The vector of fans in this zone
          */
         std::vector<std::unique_ptr<Fan>> _fans;
@@ -242,6 +327,26 @@ class Zone
          * @brief list of Dbus matches for callbacks
          */
         std::vector<sdbusplus::server::match::match> _matches;
+
+        /**
+         * @brief Initialize all the set speed event properties and actions
+         *
+         * @param[in] def - zone definition containing set speed events
+         */
+        void initEvents(const ZoneDefinition& def);
+
+        /**
+         * @brief Refresh the given property's cached value
+         *
+         * @param[in] bus - the bus to use
+         * @param[in] path - the dbus path name
+         * @param[in] iface - the dbus interface name
+         * @param[in] prop - the property name
+         */
+        void refreshProperty(sdbusplus::bus::bus& bus,
+                             const std::string& path,
+                             const std::string& iface,
+                             const std::string& prop);
 
         /**
          * @brief Get a property value from the path/interface given
