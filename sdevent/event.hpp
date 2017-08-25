@@ -2,15 +2,20 @@
 
 #include <chrono>
 #include <memory>
+#include <phosphor-logging/elog.hpp>
+#include <phosphor-logging/elog-errors.hpp>
 #include <sdbusplus/bus.hpp>
 #include <systemd/sd-event.h>
-
-// TODO: openbmc/openbmc#1720 - add error handling for sd_event API failures
+#include <xyz/openbmc_project/Common/error.hpp>
 
 namespace sdevent
 {
 namespace event
 {
+namespace io
+{
+class IO;
+} // namespace io
 
 using EventPtr = sd_event*;
 class Event;
@@ -42,6 +47,10 @@ using Event = std::unique_ptr<sd_event, EventDeleter>;
  */
 class Event
 {
+    private:
+        using InternalFailure = sdbusplus::xyz::openbmc_project::Common::
+            Error::InternalFailure;
+
     public:
         /* Define all of the basic class operations:
          *     Not allowed:
@@ -80,7 +89,34 @@ class Event
         /** @brief Wait indefinitely for new event sources. */
         void loop()
         {
-            sd_event_loop(evt.get());
+            auto rc = sd_event_loop(evt.get());
+            if (rc < 0)
+            {
+                phosphor::logging::elog<InternalFailure>();
+            }
+        }
+
+        /** @brief Stop the loop. */
+        void exit(int status = 0)
+        {
+            auto rc = sd_event_exit(evt.get(), status);
+            if (rc < 0)
+            {
+                phosphor::logging::elog<InternalFailure>();
+            }
+        }
+
+        /** @brief Get the loop exit code. */
+        auto getExitStatus()
+        {
+            int status;
+            auto rc = sd_event_get_exit_code(evt.get(), &status);
+            if (rc < 0)
+            {
+                phosphor::logging::elog<InternalFailure>();
+            }
+
+            return status;
         }
 
         /** @brief Attach to a DBus loop. */
@@ -95,10 +131,17 @@ class Event
             using namespace std::chrono;
 
             uint64_t usec;
-            sd_event_now(evt.get(), CLOCK_MONOTONIC, &usec);
+            auto rc = sd_event_now(evt.get(), CLOCK_MONOTONIC, &usec);
+            if (rc < 0)
+            {
+                phosphor::logging::elog<InternalFailure>();
+            }
+
             microseconds d(usec);
             return steady_clock::time_point(d);
         }
+
+        friend class io::IO;
 
     private:
 
@@ -122,8 +165,16 @@ inline Event::Event(EventPtr l, std::false_type) : evt(l)
 
 inline Event newDefault()
 {
+    using InternalFailure = sdbusplus::xyz::openbmc_project::Common::
+        Error::InternalFailure;
+
     sd_event* e = nullptr;
-    sd_event_default(&e);
+    auto rc = sd_event_default(&e);
+    if (rc < 0)
+    {
+        phosphor::logging::elog<InternalFailure>();
+    }
+
     return Event(e, std::false_type());
 }
 

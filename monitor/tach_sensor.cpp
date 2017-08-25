@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 #include <phosphor-logging/log.hpp>
-#include <phosphor-logging/elog.hpp>
-#include <phosphor-logging/elog-errors.hpp>
-#include <xyz/openbmc_project/Common/error.hpp>
 #include "fan.hpp"
+#include "sdbusplus.hpp"
 #include "tach_sensor.hpp"
 #include "../utility.hpp"
 
@@ -28,11 +26,6 @@ namespace fan
 namespace monitor
 {
 
-using namespace phosphor::logging;
-using InternalFailure = sdbusplus::xyz::openbmc_project::Common::
-                            Error::InternalFailure;
-
-constexpr auto PROPERTY_INTF = "org.freedesktop.DBus.Properties";
 constexpr auto FAN_SENSOR_PATH = "/xyz/openbmc_project/sensors/fan_tach/";
 constexpr auto FAN_SENSOR_CONTROL_INTF = "xyz.openbmc_project.Control.FanSpeed";
 constexpr auto FAN_SENSOR_VALUE_INTF = "xyz.openbmc_project.Sensor.Value";
@@ -46,7 +39,6 @@ constexpr auto FAN_VALUE_PROPERTY = "Value";
  * @param[in] interface - the interface the property is on
  * @param[in] propertName - the name of the property
  * @param[in] path - the dbus path
- * @param[in] service - the dbus service
  * @param[in] bus - the dbus object
  * @param[out] value - filled in with the property value
  */
@@ -54,31 +46,15 @@ template<typename T>
 static void readProperty(const std::string& interface,
                          const std::string& propertyName,
                          const std::string& path,
-                         const std::string& service,
                          sdbusplus::bus::bus& bus,
                          T& value)
 {
-    sdbusplus::message::variant<T> property;
-
     try
     {
-        auto method = bus.new_method_call(service.c_str(),
-                                           path.c_str(),
-                                           PROPERTY_INTF,
-                                           "Get");
-
-        method.append(interface, propertyName);
-
-        auto reply = bus.call(method);
-        if (reply.is_method_error())
-        {
-            log<level::ERR>("Error in property get call",
-                entry("PATH=%s", path.c_str()));
-            elog<InternalFailure>();
-        }
-
-        reply.read(property);
-        value = sdbusplus::message::variant_ns::get<T>(property);
+        value = util::SDBusPlus::getProperty<T>(bus,
+                                                path,
+                                                interface,
+                                                propertyName);
     }
     catch (std::exception& e)
     {
@@ -100,22 +76,28 @@ TachSensor::TachSensor(sdbusplus::bus::bus& bus,
     _timeout(timeout),
     _timer(events, [this, &fan](){ fan.timerExpired(*this); })
 {
-    auto service = getService();
-
     //Load in starting Target and Input values
-    readProperty(FAN_SENSOR_VALUE_INTF,
-                 FAN_VALUE_PROPERTY,
-                 _name,
-                 service,
-                 _bus,
-                 _tachInput);
+
+    try
+    {
+        // Use getProperty directly to allow a missing sensor object
+        // to abort construction.
+        _tachInput = util::SDBusPlus::getProperty<decltype(_tachInput)>(
+                _bus,
+                _name,
+                FAN_SENSOR_VALUE_INTF,
+                FAN_VALUE_PROPERTY);
+    }
+    catch (std::exception& e)
+    {
+        throw InvalidSensorError();
+    }
 
     if (_hasTarget)
     {
         readProperty(FAN_SENSOR_CONTROL_INTF,
                      FAN_TARGET_PROPERTY,
                      _name,
-                     service,
                      _bus,
                      _tachTarget);
     }
@@ -125,8 +107,7 @@ TachSensor::TachSensor(sdbusplus::bus::bus& bus,
     tachSignal = std::make_unique<sdbusplus::server::match::match>(
                      _bus,
                      match.c_str(),
-                     handleTachChangeSignal,
-                     this);
+                     [this](auto& msg){ this->handleTachChange(msg); });
 
     if (_hasTarget)
     {
@@ -135,51 +116,16 @@ TachSensor::TachSensor(sdbusplus::bus::bus& bus,
         targetSignal = std::make_unique<sdbusplus::server::match::match>(
                            _bus,
                            match.c_str(),
-                           handleTargetChangeSignal,
-                           this);
+                           [this](auto& msg){ this->handleTargetChange(msg); });
     }
 
 }
 
 
-//Can cache this value after openbmc/openbmc#1496 is resolved
-std::string TachSensor::getService()
-{
-    // Use the Value interface since not all sensors implement
-    // the control interface.
-    return phosphor::fan::util::getService(_name,
-                                           FAN_SENSOR_VALUE_INTF,
-                                           _bus);
-}
-
-
 std::string TachSensor::getMatchString(const std::string& interface)
 {
-    return std::string("type='signal',"
-                       "interface='org.freedesktop.DBus.Properties',"
-                       "member='PropertiesChanged',"
-                       "arg0namespace='" + interface + "',"
-                       "path='" + _name + "'");
-}
-
-
-int TachSensor::handleTachChangeSignal(sd_bus_message* msg,
-                                       void* usrData,
-                                       sd_bus_error* err)
-{
-    auto m = sdbusplus::message::message(msg);
-    static_cast<TachSensor*>(usrData)->handleTachChange(m, err);
-    return 0;
-}
-
-
-int TachSensor::handleTargetChangeSignal(sd_bus_message* msg,
-                                         void* usrData,
-                                         sd_bus_error* err)
-{
-    auto m = sdbusplus::message::message(msg);
-    static_cast<TachSensor*>(usrData)->handleTargetChange(m, err);
-    return 0;
+    return sdbusplus::bus::match::rules::propertiesChanged(
+            _name, interface);
 }
 
 
@@ -216,8 +162,7 @@ static void readPropertyFromMessage(sdbusplus::message::message& msg,
 }
 
 
-void TachSensor::handleTargetChange(sdbusplus::message::message& msg,
-                                    sd_bus_error* err)
+void TachSensor::handleTargetChange(sdbusplus::message::message& msg)
 {
     readPropertyFromMessage(msg,
                             FAN_SENSOR_CONTROL_INTF,
@@ -229,8 +174,7 @@ void TachSensor::handleTargetChange(sdbusplus::message::message& msg,
 }
 
 
-void TachSensor::handleTachChange(sdbusplus::message::message& msg,
-                                  sd_bus_error* err)
+void TachSensor::handleTachChange(sdbusplus::message::message& msg)
 {
    readPropertyFromMessage(msg,
                            FAN_SENSOR_VALUE_INTF,

@@ -20,6 +20,7 @@
 #include <xyz/openbmc_project/Common/error.hpp>
 #include "zone.hpp"
 #include "utility.hpp"
+#include "sdbusplus.hpp"
 
 namespace phosphor
 {
@@ -29,6 +30,7 @@ namespace control
 {
 
 using namespace std::chrono;
+using namespace phosphor::fan;
 using namespace phosphor::logging;
 using InternalFailure = sdbusplus::xyz::openbmc_project::Common::
                              Error::InternalFailure;
@@ -45,7 +47,8 @@ Zone::Zone(Mode mode,
     _incDelay(std::get<incDelayPos>(def)),
     _decInterval(std::get<decIntervalPos>(def)),
     _incTimer(events, [this](){ this->incTimerExpired(); }),
-    _decTimer(events, [this](){ this->decTimerExpired(); })
+    _decTimer(events, [this](){ this->decTimerExpired(); }),
+    _sdEvents(events)
 {
     auto& fanDefs = std::get<fanListPos>(def);
 
@@ -57,28 +60,47 @@ Zone::Zone(Mode mode,
     // Do not enable set speed events when in init mode
     if (mode != Mode::init)
     {
-        initEvents(def);
+        // Setup signal trigger for set speed events
+        for (auto& event : std::get<setSpeedEventsPos>(def))
+        {
+            initEvent(event);
+        }
         // Start timer for fan speed decreases
         if (!_decTimer.running() && _decInterval != seconds::zero())
         {
             _decTimer.start(_decInterval,
-                            phosphor::fan::util::Timer::TimerType::repeating);
+                            util::Timer::TimerType::repeating);
         }
     }
 }
 
-
 void Zone::setSpeed(uint64_t speed)
 {
-    for (auto& fan : _fans)
+    if (_isActive)
     {
-        fan->setSpeed(speed);
+        _targetSpeed = speed;
+        for (auto& fan : _fans)
+        {
+            fan->setSpeed(_targetSpeed);
+        }
+    }
+}
+
+void Zone::setFullSpeed()
+{
+    if (_fullSpeed != 0)
+    {
+        _targetSpeed = _fullSpeed;
+        for (auto& fan : _fans)
+        {
+            fan->setSpeed(_targetSpeed);
+        }
     }
 }
 
 void Zone::setActiveAllow(const Group* group, bool isActiveAllow)
 {
-    _active[group] = isActiveAllow;
+    _active[*(group)] = isActiveAllow;
     if (!isActiveAllow)
     {
         _isActive = false;
@@ -110,22 +132,23 @@ void Zone::requestSpeedIncrease(uint64_t targetDelta)
     if (targetDelta > _incSpeedDelta &&
         _targetSpeed < _ceilingSpeed)
     {
-        _targetSpeed = (targetDelta - _incSpeedDelta) + _targetSpeed;
+        auto requestTarget = _targetSpeed;
+        requestTarget = (targetDelta - _incSpeedDelta) + requestTarget;
         _incSpeedDelta = targetDelta;
         // Target speed can not go above a defined ceiling speed
-        if (_targetSpeed > _ceilingSpeed)
+        if (requestTarget > _ceilingSpeed)
         {
-            _targetSpeed = _ceilingSpeed;
+            requestTarget = _ceilingSpeed;
         }
         // Cancel current timer countdown
         if (_incTimer.running())
         {
             _incTimer.stop();
         }
-        setSpeed(_targetSpeed);
+        setSpeed(requestTarget);
         // Start timer countdown for fan speed increase
         _incTimer.start(_incDelay,
-                        phosphor::fan::util::Timer::TimerType::oneshot);
+                        util::Timer::TimerType::oneshot);
     }
 }
 
@@ -151,58 +174,116 @@ void Zone::decTimerExpired()
     // the increase timer is not running (i.e. not in the middle of increasing)
     if (_incSpeedDelta == 0 && !_incTimer.running())
     {
+        auto requestTarget = _targetSpeed;
         // Target speed can not go below the defined floor speed
-        if ((_targetSpeed < _decSpeedDelta) ||
-            (_targetSpeed - _decSpeedDelta < _floorSpeed))
+        if ((requestTarget < _decSpeedDelta) ||
+            (requestTarget - _decSpeedDelta < _floorSpeed))
         {
-            _targetSpeed = _floorSpeed;
+            requestTarget = _floorSpeed;
         }
         else
         {
-            _targetSpeed = _targetSpeed - _decSpeedDelta;
+            requestTarget = requestTarget - _decSpeedDelta;
         }
-        setSpeed(_targetSpeed);
+        setSpeed(requestTarget);
     }
     // Clear decrease delta when timer expires
     _decSpeedDelta = 0;
     // Decrease timer is restarted since its repeating
 }
 
-void Zone::initEvents(const ZoneDefinition& def)
+void Zone::initEvent(const SetSpeedEvent& event)
 {
-    // Setup signal trigger for set speed events
-    for (auto& event : std::get<setSpeedEventsPos>(def))
+    // Get the current value for each property
+    for (auto& group : std::get<groupPos>(event))
     {
-        // Get the current value for each property
-        for (auto& entry : std::get<groupPos>(event))
+        try
         {
             refreshProperty(_bus,
-                            entry.first,
-                            std::get<intfPos>(entry.second),
-                            std::get<propPos>(entry.second));
+                            group.first,
+                            std::get<intfPos>(group.second),
+                            std::get<propPos>(group.second));
         }
-        // Setup signal matches for property change events
-        for (auto& prop : std::get<propChangeListPos>(event))
+        catch (const InternalFailure& ife)
         {
-            _signalEvents.emplace_back(
-                    std::make_unique<EventData>(
-                            EventData
-                            {
-                                std::get<groupPos>(event),
-                                std::get<handlerObjPos>(prop),
-                                std::get<actionPos>(event)
-                            }));
-            _matches.emplace_back(
-                    _bus,
-                    std::get<signaturePos>(prop).c_str(),
-                    std::bind(std::mem_fn(&Zone::handleEvent),
-                              this,
-                              std::placeholders::_1,
-                              _signalEvents.back().get()));
+            log<level::INFO>(
+                "Unable to find property",
+                entry("PATH=%s", group.first.c_str()),
+                entry("INTERFACE=%s", std::get<intfPos>(group.second).c_str()),
+                entry("PROPERTY=%s", std::get<propPos>(group.second).c_str()));
         }
-        // Run action function for initial event state
-        std::get<actionPos>(event)(*this,
-                                   std::get<groupPos>(event));
+    }
+    // Setup signal matches for property change events
+    for (auto& prop : std::get<propChangeListPos>(event))
+    {
+        std::unique_ptr<EventData> eventData =
+            std::make_unique<EventData>(
+                EventData
+                {
+                    std::get<groupPos>(event),
+                    std::get<handlerObjPos>(prop),
+                    std::get<actionPos>(event)
+                }
+            );
+        std::unique_ptr<sdbusplus::server::match::match> match =
+            std::make_unique<sdbusplus::server::match::match>(
+                _bus,
+                std::get<signaturePos>(prop).c_str(),
+                std::bind(std::mem_fn(&Zone::handleEvent),
+                          this,
+                          std::placeholders::_1,
+                          eventData.get())
+            );
+        _signalEvents.emplace_back(std::move(eventData), std::move(match));
+    }
+    // Attach a timer to run the action of an event
+    auto eventTimer = std::get<timerPos>(event);
+    if (std::get<intervalPos>(eventTimer) != seconds(0))
+    {
+        std::unique_ptr<util::Timer> timer =
+            std::make_unique<util::Timer>(
+                _sdEvents,
+                [this,
+                 action = &(std::get<actionPos>(event)),
+                 group = &(std::get<groupPos>(event))]()
+                 {
+                     this->timerExpired(*group, *action);
+                 });
+        if (!timer->running())
+        {
+            timer->start(std::get<intervalPos>(eventTimer),
+                         util::Timer::TimerType::repeating);
+        }
+        _timerEvents.emplace_back(std::move(timer));
+    }
+    // Run action function for initial event state
+    std::get<actionPos>(event)(*this,
+                               std::get<groupPos>(event));
+}
+
+void Zone::removeEvent(const SetSpeedEvent& event)
+{
+    // Find the signal event to be removed
+    auto it = std::find_if(
+        _signalEvents.begin(),
+        _signalEvents.end(),
+        [&event](auto const& se)
+        {
+            auto seEventData = *std::get<signalEventDataPos>(se);
+            // TODO Use the action function target for comparison
+            return
+            (
+                std::get<eventGroupPos>(seEventData) ==
+                    std::get<groupPos>(event) &&
+                std::get<eventActionPos>(seEventData).target_type().name() ==
+                    std::get<actionPos>(event).target_type().name()
+            );
+        });
+    if (it != std::end(_signalEvents))
+    {
+        std::get<signalEventDataPos>(*it).reset();
+        std::get<signalMatchPos>(*it).reset();
+        _signalEvents.erase(it);
     }
 }
 
@@ -222,7 +303,7 @@ void Zone::getProperty(sdbusplus::bus::bus& bus,
                        const std::string& prop,
                        PropertyVariantType& value)
 {
-    auto serv = phosphor::fan::util::getService(path, iface, bus);
+    auto serv = util::SDBusPlus::getService(bus, path, iface);
     auto hostCall = bus.new_method_call(serv.c_str(),
                                         path.c_str(),
                                         "org.freedesktop.DBus.Properties",
@@ -232,10 +313,16 @@ void Zone::getProperty(sdbusplus::bus::bus& bus,
     auto hostResponseMsg = bus.call(hostCall);
     if (hostResponseMsg.is_method_error())
     {
-        log<level::ERR>("Error in host call response for retrieving property");
+        log<level::INFO>("Host call response error for retrieving property");
         elog<InternalFailure>();
     }
     hostResponseMsg.read(value);
+}
+
+void Zone::timerExpired(Group eventGroup, Action eventAction)
+{
+    // Perform the action
+    eventAction(*this, eventGroup);
 }
 
 void Zone::handleEvent(sdbusplus::message::message& msg,

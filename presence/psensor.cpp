@@ -13,10 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <sdbusplus/exception.hpp>
-#include "tach_sensor.hpp"
-#include "fan_enclosure.hpp"
-
+#include "psensor.hpp"
 
 namespace phosphor
 {
@@ -24,28 +21,7 @@ namespace fan
 {
 namespace presence
 {
-
-bool TachSensor::isPresent()
-{
-    return state;
-}
-
-void TachSensor::handleTachChange(sdbusplus::message::message& sdbpMsg)
-{
-    std::string msgSensor;
-    std::map<std::string, sdbusplus::message::variant<int64_t>> msgData;
-    sdbpMsg.read(msgSensor, msgData);
-
-    // Find the 'Value' property containing tach
-    auto valPropMap = msgData.find("Value");
-    if (valPropMap != msgData.end())
-    {
-        state = sdbusplus::message::variant_ns::get<int64_t>(
-            valPropMap->second) != 0;
-    }
-    // Update inventory according to latest tach reported
-    fanEnc.updInventory();
-}
+std::size_t PresenceSensor::nextId = 1;
 
 } // namespace presence
 } // namespace fan

@@ -5,23 +5,29 @@ sbin_PROGRAMS = \
 	phosphor-fan-presence-tach
 
 phosphor_fan_presence_tach_SOURCES = \
-	fan_enclosure.cpp \
-	tach_sensor.cpp \
+	anyof.cpp \
+	fallback.cpp \
+	fan.cpp \
+	gpio.cpp \
+	psensor.cpp \
+	tach.cpp \
 	tach_detect.cpp
-nodist_phosphor_fan_presence_tach_SOURCES = \
-	fan_detect_defs.cpp
 
 phosphor_fan_presence_tach_LDADD = \
 	$(top_builddir)/libfan.la \
 	$(SDBUSPLUS_LIBS) \
 	$(PHOSPHOR_LOGGING_LIBS) \
-	${PHOSPHOR_DBUS_INTERFACES_LIBS}
+	${PHOSPHOR_DBUS_INTERFACES_LIBS} \
+	$(LIBEVDEV_LIBS)
 phosphor_fan_presence_tach_CXXFLAGS = \
 	$(SDBUSPLUS_CFLAGS) \
 	$(PHOSPHOR_LOGGING_CFLAGS) \
-	${PHOSPHOR_DBUS_INTERFACES_CFLAGS}
+	${PHOSPHOR_DBUS_INTERFACES_CFLAGS} \
+	$(LIBEVDEV_CFLAGS)
 
-BUILT_SOURCES = fan_detect_defs.cpp
+BUILT_SOURCES = generated.hpp
+TEMPLATES = \
+	templates/generated.mako.hpp
 
-fan_detect_defs.cpp: ${srcdir}/gen-fan-detect-defs.py $(FAN_DETECT_YAML_FILE)
-	$(AM_V_GEN)$(GEN_FAN_DETECT_DEFS) > $(builddir)/$@
+generated.hpp: $(TEMPLATES) ${srcdir}/pfpgen.py $(PRESENCE_CONFIG)
+	$(AM_V_GEN)$(PFPGEN) > $(builddir)/$@

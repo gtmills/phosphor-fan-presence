@@ -3,7 +3,6 @@
 #include <vector>
 #include <algorithm>
 #include <sdbusplus/bus.hpp>
-#include <sdbusplus/server.hpp>
 #include "fan.hpp"
 #include "types.hpp"
 #include "timer.hpp"
@@ -58,22 +57,16 @@ class Zone
 
         /**
          * Sets all fans in the zone to the speed
-         * passed in
+         * passed in when the zone is active
          *
          * @param[in] speed - the fan speed
          */
         void setSpeed(uint64_t speed);
 
         /**
-         * Sets the zone to full speed
+         * Sets the zone to full speed regardless of zone's active state
          */
-        inline void setFullSpeed()
-        {
-            if (_fullSpeed != 0)
-            {
-                setSpeed(_fullSpeed);
-            }
-        }
+        void setFullSpeed();
 
         /**
          * @brief Sets the automatic fan control allowed active state
@@ -115,8 +108,38 @@ class Zone
                                      const std::string& property)
         {
             return sdbusplus::message::variant_ns::get<T>(
-                    _properties[object][interface][property]);
+                    _properties.at(object).at(interface).at(property));
         };
+
+        /**
+         * @brief Get the object's property variant
+         *
+         * @param[in] object - Name of the object containing the property
+         * @param[in] interface - Interface name containing the property
+         * @param[in] property - Property name
+         *
+         * @return - The property variant
+         */
+        inline auto getPropValueVariant(const std::string& object,
+                                        const std::string& interface,
+                                        const std::string& property)
+        {
+            return _properties.at(object).at(interface).at(property);
+        };
+
+        /**
+         * @brief Initialize a set speed event properties and actions
+         *
+         * @param[in] event - Set speed event
+         */
+        void initEvent(const SetSpeedEvent& event);
+
+        /**
+         * @brief Removes all the set speed event properties and actions
+         *
+         * @param[in] event - Set speed event
+         */
+        void removeEvent(const SetSpeedEvent& event);
 
         /**
          * @brief Get the default floor speed
@@ -218,6 +241,15 @@ class Zone
          */
         void decTimerExpired();
 
+        /**
+         * @brief Callback function for event timers that processes the given
+         * action for a group
+         *
+         * @param[in] eventGroup - Group to process action on
+         * @param[in] eventAction - Event action to run
+         */
+        void timerExpired(Group eventGroup, Action eventAction);
+
     private:
 
         /**
@@ -301,6 +333,11 @@ class Zone
         phosphor::fan::util::Timer _decTimer;
 
         /**
+         * Dbus event used on set speed event timers
+         */
+        phosphor::fan::event::EventPtr& _sdEvents;
+
+        /**
          * The vector of fans in this zone
          */
         std::vector<std::unique_ptr<Fan>> _fans;
@@ -316,24 +353,17 @@ class Zone
         /**
          * @brief Map of active fan control allowed by groups
          */
-        std::map<const Group*, bool> _active;
+        std::map<const Group, bool> _active;
 
         /**
-         * @brief List of signal event arguments
+         * @brief List of signal event arguments and Dbus matches for callbacks
          */
-        std::vector<std::unique_ptr<EventData>> _signalEvents;
+        std::vector<SignalEvent> _signalEvents;
 
         /**
-         * @brief list of Dbus matches for callbacks
+         * @brief List of timers for events
          */
-        std::vector<sdbusplus::server::match::match> _matches;
-
-        /**
-         * @brief Initialize all the set speed event properties and actions
-         *
-         * @param[in] def - zone definition containing set speed events
-         */
-        void initEvents(const ZoneDefinition& def);
+        std::vector<std::unique_ptr<phosphor::fan::util::Timer>> _timerEvents;
 
         /**
          * @brief Refresh the given property's cached value

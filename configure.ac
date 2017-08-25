@@ -30,6 +30,8 @@ PKG_CHECK_MODULES([SYSTEMD], [libsystemd >= 221], ,
 [AC_MSG_ERROR([Could not find systemd...systemd developement package required])])
 PKG_CHECK_MODULES([PHOSPHOR_DBUS_INTERFACES], [phosphor-dbus-interfaces], ,
 [AC_MSG_ERROR([Could not find phosphor-dbus-interfaces...openbmc/phosphor-dbus-interfaces package required])])
+PKG_CHECK_MODULES([LIBEVDEV], [libevdev], ,
+[AC_MSG_ERROR([The libevdev package is required])])
 
 # Checks for library functions.
 LT_INIT # Required for systemd linking
@@ -72,15 +74,18 @@ AM_CONDITIONAL([WANT_MONITOR], [test "x$enable_monitor" != "xno"])
 # Package specific checks.
 AS_IF([test "x$enable_presence" != "xno"], [
        # Add optional yaml file argument
-       AC_ARG_VAR(FAN_DETECT_YAML_FILE,
-                  [The fan presence detection definition file to use])
-       AS_IF([test "x$FAN_DETECT_YAML_FILE" == "x"],
-             [FAN_DETECT_YAML_FILE="\${top_srcdir}/presence/example/fan-detect.yaml"])
-       AC_DEFINE_UNQUOTED([FAN_DETECT_YAML_FILE], ["$FAN_DETECT_YAML_FILE"],
-                          [The fan presence detection definition file to use])
+       AC_ARG_VAR(PRESENCE_CONFIG,
+                  [The fan presence config file.])
 
-       AC_SUBST([GEN_FAN_DETECT_DEFS],
-                ["$PYTHON \${top_srcdir}/presence/gen-fan-detect-defs.py -y $FAN_DETECT_YAML_FILE"])
+       AS_IF([test "x$PRESENCE_CONFIG" == "x"],
+             [PRESENCE_CONFIG="\${top_srcdir}/presence/example/example.yaml"])
+
+       AC_DEFINE_UNQUOTED([PRESENCE_CONFIG], ["$PRESENCE_CONFIG"],
+                          [The fan presence config file.])
+
+       AC_SUBST([PFPGEN],
+                ["$PYTHON \${top_srcdir}/presence/pfpgen.py generate-cpp -i $PRESENCE_CONFIG"])
+
        AC_CONFIG_FILES([presence/Makefile])
        ])
 
@@ -132,8 +137,6 @@ AS_IF([test "x$enable_control" != "xno"], [
 ])
 
 AS_IF([test "x$enable_cooling_type" != "xno"], [
-       PKG_CHECK_MODULES([LIBEVDEV], [libevdev], ,
-                         [AC_MSG_ERROR([The libevdev package is required])])
        AC_CONFIG_FILES([cooling-type/Makefile])
 ])
 AS_IF([test "x$enable_monitor" != "xno"], [
@@ -161,5 +164,5 @@ AS_IF([test "x$enable_monitor" != "xno"], [
 ])
 
 # Create configured output
-AC_CONFIG_FILES([Makefile test/Makefile])
+AC_CONFIG_FILES([Makefile test/Makefile sdevent/test/Makefile evdevpp/test/Makefile presence/test/Makefile])
 AC_OUTPUT

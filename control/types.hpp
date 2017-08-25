@@ -2,6 +2,8 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <sdbusplus/server.hpp>
+#include "timer.hpp"
 
 namespace phosphor
 {
@@ -42,19 +44,44 @@ using Handler = std::function<void(sdbusplus::bus::bus&,
                                    Zone&)>;
 using Action = std::function<void(Zone&, const Group&)>;
 
+constexpr auto pcPathPos = 0;
+constexpr auto pcIntfPos = 1;
+constexpr auto pcPropPos = 2;
+constexpr auto pcValuePos = 3;
+using PrecondGroup = std::tuple<std::string,
+                                std::string,
+                                std::string,
+                                PropertyVariantType>;
+
+constexpr auto intervalPos = 0;
+using Timer = std::tuple<std::chrono::seconds>;
+
 constexpr auto signaturePos = 0;
 constexpr auto handlerObjPos = 1;
 using PropertyChange = std::tuple<std::string, Handler>;
 
 constexpr auto groupPos = 0;
 constexpr auto actionPos = 1;
-constexpr auto propChangeListPos = 2;
-using SetSpeedEvent = std::tuple<Group, Action, std::vector<PropertyChange>>;
+constexpr auto timerPos = 2;
+constexpr auto propChangeListPos = 3;
+using SetSpeedEvent = std::tuple<Group,
+                                 Action,
+                                 Timer,
+                                 std::vector<PropertyChange>>;
 
 constexpr auto eventGroupPos = 0;
 constexpr auto eventHandlerPos = 1;
 constexpr auto eventActionPos = 2;
 using EventData = std::tuple<Group, Handler, Action>;
+
+constexpr auto timerTimerPos = 0;
+using TimerEvent = std::tuple<phosphor::fan::util::Timer>;
+
+constexpr auto signalEventDataPos = 0;
+constexpr auto signalMatchPos = 1;
+using SignalEvent =
+    std::tuple<std::unique_ptr<EventData>,
+               std::unique_ptr<sdbusplus::server::match::match>>;
 
 constexpr auto zoneNumPos = 0;
 constexpr auto fullSpeedPos = 1;
