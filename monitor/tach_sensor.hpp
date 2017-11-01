@@ -15,6 +15,7 @@ namespace monitor
 
 class Fan;
 
+constexpr auto FAN_SENSOR_PATH = "/xyz/openbmc_project/sensors/fan_tach/";
 
 /**
  * @class TachSensor
@@ -101,11 +102,32 @@ class TachSensor
         }
 
         /**
-         * Returns the timer object for this sensor
+         * @brief Says if the timer is running or not
+         *
+         * @return bool - if timer is currently running
          */
-        inline phosphor::fan::util::Timer& getTimer()
+        inline bool timerRunning()
         {
-            return _timer;
+            return _timer.running();
+        }
+
+        /**
+         * @brief Starts the timer for the amount of time
+         *        specified in the constructor
+         */
+        inline void startTimer()
+        {
+            _timer.start(
+                    getTimeout(),
+                    phosphor::fan::util::Timer::TimerType::oneshot);
+        }
+
+        /**
+         * @brief Stops the timer
+         */
+        inline void stopTimer()
+        {
+            _timer.stop();
         }
 
         /**
